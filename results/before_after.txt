@@ -1,0 +1,57 @@
+
+=== environment ===
+python   3.13.5
+torch    2.14.1
+device   cpu
+policy   MiniPolicy(hidden=256, head_dim=256, num_positions=8)
+
+=== what the checkpoint contains ===
+checkpoint keys (9): ['o_proj.bias', 'o_proj.weight', 'obs_mean', 'obs_std', 'qkv.bias', 'qkv.weight', 'vision.position_freqs', 'vision.proj.bias', 'vision.proj.weight']
+non-persistent buffers (2, absent from state_dict): ['rotary.inv_freq', 'vision.position_ids']
+
+=== why to_empty is used: moving a meta module with .to() fails ===
+model.to(cpu) raised NotImplementedError: Cannot copy out of meta tensor; no data! Please use torch.nn.Module.to_empty() instead of torch.nn.Module.to() when moving module from meta to a different device.
+
+=== BEFORE: meta -> to_empty -> deterministic sentinel -> streaming load ===
+streaming loader copied 9 keys
+missing keys reported by the loader: ['rotary.inv_freq', 'vision.position_ids']
+of which non-persistent buffers:     ['rotary.inv_freq', 'vision.position_ids']
+sentinel written after to_empty: float=1.401298464324817e-45, int=2314861380256428066
+
+reference inv_freq[:6] = [1.0000, 0.9306, 0.8660, 0.8058, 0.7499, 0.6978]
+loaded    inv_freq[:6] = [1.4013e-45, 1.4013e-45, 1.4013e-45, 1.4013e-45, 1.4013e-45, 1.4013e-45]
+torch.equal(inv_freq, reference) = False
+
+reference position_ids = [0, 1, 2, 3, 4, 5, 6, 7]
+loaded    position_ids = [2314861380256428066, 2314861380256428066, 2314861380256428066, 2314861380256428066, 2314861380256428066, 2314861380256428066, 2314861380256428066, 2314861380256428066]
+torch.equal(position_ids, reference) = False
+
+forward output: shape=(8, 256), all finite=True, exception=none
+max |buggy - reference| = 0.519259
+torch.allclose(buggy, reference) = False
+
+=== AFTER: same path + restore_nonpersistent_buffers(model) ===
+streaming loader copied 9 keys
+restored non-persistent buffers (2): ['rotary.inv_freq', 'vision.position_ids']
+reference inv_freq[:6] = [1.0000, 0.9306, 0.8660, 0.8058, 0.7499, 0.6978]
+restored  inv_freq[:6] = [1.0000, 0.9306, 0.8660, 0.8058, 0.7499, 0.6978]
+torch.equal(inv_freq, reference) = True
+
+reference position_ids = [0, 1, 2, 3, 4, 5, 6, 7]
+restored  position_ids = [0, 1, 2, 3, 4, 5, 6, 7]
+torch.equal(position_ids, reference) = True
+
+max |restored - reference| = 0.000000
+torch.equal(restored, reference) = True
+
+=== FAIL-CLOSED: unknown non-persistent buffer refuses to load ===
+raised NonPersistentBufferError: no rebuild rule for non-persistent buffer 'mystery_cache' of module 'ModuleWithUnknownBuffer'; its storage is uninitialized and the checkpoint cannot restore it. Add a rule to src.restore.rebuild_nonpersistent_buffer().
+
+=== INFORMATIONAL: genuinely uninitialized memory (allocator-dependent, not asserted) ===
+streaming loader copied 9 keys, still missing: ['rotary.inv_freq', 'vision.position_ids']
+inv_freq[:6] = [0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
+position_ids = [0, 0, 0, 0, 0, 0, 0, 0]
+torch.equal(inv_freq, reference) = False
+torch.equal(position_ids, reference) = False
+note: these bytes are whatever the allocator returned; they are not reproducible,
+      which is why the tests do not depend on them.
